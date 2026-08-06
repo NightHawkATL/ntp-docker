@@ -80,5 +80,59 @@ class TestNTPDashboardApp(unittest.TestCase):
         self.assertIsNone(tag)
         self.assertEqual(error, "No tags found")
 
+    @patch('app.load_config')
+    def test_system_metrics_disabled(self, mock_config):
+        """Test that system metrics returns 403 when the monitor is disabled in configuration."""
+        mock_config.return_value = {"enable_monitor": False}
+        response = self.app.get('/api/system_metrics')
+        self.assertEqual(response.status_code, 403)
+        self.assertIsNotNone(response.data)
+        self.assertIn(b'Resource monitor disabled', response.data)
+
+    @patch('app.load_config')
+    @patch('app.run_commands_local')
+    def test_system_metrics_enabled_local(self, mock_run_cmd, mock_config):
+        """Test that system metrics successfully parses local command outputs when enabled."""
+        mock_config.return_value = {"enable_monitor": True, "mode": "local"}
+        # Mocking top, free, and thermal outputs
+        mock_run_cmd.return_value = ["15.5", "1024 4096", "45000"]
+        
+        response = self.app.get('/api/system_metrics')
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(response.data)
+        data = json.loads(response.data)
+        
+        self.assertIn("cpu_percent", data)
+        self.assertEqual(data["cpu_percent"], "15.5")
+        self.assertIn("ram_used_mb", data)
+        self.assertEqual(data["ram_used_mb"], 1024)
+        self.assertIn("ram_total_mb", data)
+        self.assertEqual(data["ram_total_mb"], 4096)
+        self.assertIn("ram_percent", data)
+        self.assertEqual(data["ram_percent"], 25.0)
+        self.assertIn("temperature_c", data)
+        self.assertEqual(data["temperature_c"], 45.0)
+
+    @patch('app.subprocess.run')
+    def test_run_commands_local(self, mock_subproc_run):
+        """Test that run_commands_local safely handles local subprocess executions."""
+        from app import run_commands_local
+        class MockCompletedProcess:
+            def __init__(self, stdout, returncode):
+                self.stdout = stdout
+                self.returncode = returncode
+        
+        # Test success path
+        mock_subproc_run.return_value = MockCompletedProcess(stdout="test_output\n", returncode=0)
+        results = run_commands_local(["echo test"])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0], "test_output\n")
+
+        # Test failure path
+        mock_subproc_run.return_value = MockCompletedProcess(stdout="bad cmd", returncode=1)
+        results = run_commands_local(["bad_command"])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0], "Error: bad cmd")
+
 if __name__ == '__main__':
     unittest.main()

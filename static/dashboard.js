@@ -83,6 +83,24 @@ async function loadUI() {
         document.getElementById('mode').value = conf.mode || 'local';
         document.getElementById('host').value = conf.host || '';
         document.getElementById('user').value = conf.user || '';
+        if(document.getElementById('enable_monitor')) {
+            document.getElementById('enable_monitor').checked = conf.enable_monitor || false;
+        }
+
+        const monitorContainer = document.getElementById('resourceMonitor');
+        const offsetCard = document.getElementById('timeOffsetCard');
+        const connCard = document.getElementById('connModeCard');
+        
+        if (conf.enable_monitor && monitorContainer) {
+            monitorContainer.classList.remove('hidden');
+            if(offsetCard) { offsetCard.classList.remove('lg:col-span-10'); offsetCard.classList.add('lg:col-span-9'); }
+            if(connCard) { connCard.classList.remove('lg:col-span-10'); connCard.classList.add('lg:col-span-5'); }
+            fetchMetrics(); // Initial fetch
+        } else if (monitorContainer) {
+            monitorContainer.classList.add('hidden');
+            if(offsetCard) { offsetCard.classList.remove('lg:col-span-9'); offsetCard.classList.add('lg:col-span-10'); }
+            if(connCard) { connCard.classList.remove('lg:col-span-5'); connCard.classList.add('lg:col-span-10'); }
+        }
         
         // Show asterisks if a key is saved, otherwise leave blank
         document.getElementById('ssh_key').value = conf.ssh_key ? '********' : '';
@@ -109,7 +127,8 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
             host: document.getElementById('host').value,
             user: document.getElementById('user').value,
             password: document.getElementById('password').value,
-            ssh_key: sshKeyVal
+            ssh_key: sshKeyVal,
+            enable_monitor: document.getElementById('enable_monitor') ? document.getElementById('enable_monitor').checked : false
         };
         
         // 3. Send to Python
@@ -548,3 +567,34 @@ async function checkForUpdates() {
     }
 }
 checkForUpdates(); // Run once when the dashboard loads
+
+// 5. Hardware Resource Metrics Polling
+async function fetchMetrics() {
+    try {
+        const res = await fetch('/api/system_metrics');
+        if (!res.ok) {
+            document.getElementById('resourceStatus').className = 'w-3 h-3 rounded-full bg-red-500 animate-pulse';
+            throw new Error('Metrics fetch rejected');
+        }
+        const data = await res.json();
+        if(data.error) throw new Error(data.error);
+        
+        document.getElementById('cpuUsageText').innerText = data.cpu_percent + '%';
+        document.getElementById('ramUsageText').innerText = data.ram_used_mb + ' / ' + data.ram_total_mb + ' MB (' + data.ram_percent + '%)';
+        document.getElementById('cpuTempText').innerText = data.temperature_c !== 'N/A' ? data.temperature_c + ' °C' : 'N/A';
+        document.getElementById('resourceStatus').className = 'w-3 h-3 rounded-full bg-primary-500 animate-pulse shadow-[0_0_8px_rgba(var(--primary-500),0.8)]';
+
+    } catch (e) {
+        console.error('Resource monitor error:', e);
+        document.getElementById('cpuUsageText').innerText = 'Error';
+        document.getElementById('ramUsageText').innerText = 'Error';
+        document.getElementById('cpuTempText').innerText = 'Error';
+        document.getElementById('resourceStatus').className = 'w-3 h-3 rounded-full bg-red-500 animate-pulse';
+    }
+}
+setInterval(() => {
+    const monitorContainer = document.getElementById('resourceMonitor');
+    if(monitorContainer && !monitorContainer.classList.contains('hidden')) {
+        fetchMetrics();
+    }
+}, 5000);
