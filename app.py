@@ -95,14 +95,20 @@ def decrypt_pwd(encrypted_pwd):
         log.error('Failed to decrypt stored credential: %s', e)
         return ""
 
+import secrets
+import string
+
 # --- Config Handling ---
+def generate_default_password():
+    return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r') as f: return json.load(f)
         except Exception as e:
             log.error('Failed to read config file %s: %s', CONFIG_FILE, e)
-    return {"mode": "local", "host": "", "user": "ubuntu", "password": "", "ssh_key": "", "enable_monitor": False}
+    return {"mode": "local", "host": "", "user": "ubuntu", "password": generate_default_password(), "ssh_key": "", "enable_monitor": False}
 
 def save_config(config):
     with open(CONFIG_FILE, 'w') as f: json.dump(config, f)
