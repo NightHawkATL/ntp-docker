@@ -30,7 +30,7 @@ APP_VERSION = os.environ.get("APP_VERSION", "dev")
 _update_cache = {"latest": None, "checked": 0, "error": None}
 _update_cache_lock = threading.Lock()
 DOCKERHUB_REPO = "nighthawkatl/ntp-dashboard"
-DOCKERHUB_TAGS_URL = f"https://hub.docker.com/v2/repositories/{DOCKERHUB_REPO}/tags?page_size=1&page=1&ordering=last_updated"
+DOCKERHUB_TAGS_URL = f"https://hub.docker.com/v2/repositories/{DOCKERHUB_REPO}/tags?page_size=5&page=1&ordering=last_updated"
 _CACHE_TTL = 300  # seconds (5 minutes)
 
 def get_latest_dockerhub_tag():
@@ -95,14 +95,20 @@ def decrypt_pwd(encrypted_pwd):
         log.error('Failed to decrypt stored credential: %s', e)
         return ""
 
+import secrets
+import string
+
 # --- Config Handling ---
+def generate_default_password():
+    return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r') as f: return json.load(f)
         except Exception as e:
             log.error('Failed to read config file %s: %s', CONFIG_FILE, e)
-    return {"mode": "local", "host": "", "user": "ubuntu", "password": "", "ssh_key": ""}
+    return {"mode": "local", "host": "", "user": "ubuntu", "password": generate_default_password(), "ssh_key": "", "enable_monitor": False}
 
 def save_config(config):
     with open(CONFIG_FILE, 'w') as f: json.dump(config, f)
@@ -195,6 +201,61 @@ def set_cache_headers(response):
 def index(): 
     return render_template('index.html', app_version=APP_VERSION)
 
+@app.route('/api/system_metrics')
+def system_metrics():
+    """Fetches CPU, RAM, and Temperature data from the configured host."""
+    config = load_config()
+    if not config.get('enable_monitor', False):
+        return jsonify({"error": "Resource monitor disabled"}), 403
+
+    # 1. CPU usage using top (supports both standard Ubuntu procps and Alpine busybox)
+    # 2. Memory usage using free
+    # 3. CPU temp (standard linux thermal zone)
+    cmds = [
+        "top -bn1 2>/dev/null | awk -F'[, %]+' '/^%?[Cc]pu|CPU/ {for(i=1;i<=NF;i++) {if ($i ~ /^id/) {printf \"%.1f\", 100 - $(i-1); f=1; exit}}} END {if(!f) print \"N/A\"}'",
+        "free -m | grep -i '^mem' | awk '{print $3, $2}' || echo 'N/A N/A'",
+        "cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 'N/A'"
+    ]
+
+    try:
+        if config.get('mode') == 'remote':
+            results = run_commands_remote(cmds, config)
+        else:
+            results = run_commands_local(cmds)
+
+        if any(r.startswith("Error") for r in results):
+            return jsonify({"error": "Metrics fetch failed"}), 500
+
+        # Parse CPU
+        cpu_usage = results[0].strip() if results[0].strip() != "N/A" else "0.0"
+        
+        # Parse RAM (Used / Total)
+        ram_parts = results[1].replace('%', '').strip().split()
+        if len(ram_parts) == 2 and ram_parts[0] != "N/A":
+            ram_used = int(ram_parts[0])
+            ram_total = int(ram_parts[1])
+            ram_percent = round((ram_used / ram_total) * 100, 1) if ram_total > 0 else 0
+        else:
+            ram_used, ram_total, ram_percent = (0, 0, 0)
+            
+        # Parse Temp
+        temp_raw = results[2].strip()
+        if temp_raw != "N/A" and temp_raw.isdigit():
+            # milliCelsius to Celsius
+            temp_c = round(int(temp_raw) / 1000, 1)
+        else:
+            temp_c = "N/A"
+
+        return jsonify({
+            "cpu_percent": cpu_usage,
+            "ram_used_mb": ram_used,
+            "ram_total_mb": ram_total,
+            "ram_percent": ram_percent,
+            "temperature_c": temp_c
+        })
+    except Exception as e:
+        log.error("Failed to fetch system metrics: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 # --- API: Update Check (Docker Hub) ---
 @app.route('/api/update')
